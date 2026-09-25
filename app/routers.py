@@ -5,11 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from . import services
 from .db import get_db
 from .schemas import (
+    BatchConflictOut,
+    ConflictDetail,
     DiffOut,
     EventBatchIn,
     FreezeIn,
@@ -45,6 +48,12 @@ def read_plan(plan_version: str, db: Session = Depends(get_db)) -> Any:
     "/plans/{plan_version}/events",
     response_model=ImportResult,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_409_CONFLICT: {
+            "model": BatchConflictOut,
+            "description": "同号事件内容冲突，整批已原子拒绝并记录审计",
+        }
+    },
 )
 def post_events(
     plan_version: str, body: EventBatchIn, db: Session = Depends(get_db)
@@ -57,6 +66,28 @@ def post_events(
         )
     except services.PlanNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except services.BatchConflictError as exc:
+        # 响应只携带指纹与字段名，不泄露已存储事件的学员信息。
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=BatchConflictOut(
+                detail=(
+                    f"batch rejected: {len(exc.conflicts)} event id(s) carry "
+                    "conflicting content; the entire batch was rolled back"
+                ),
+                batch_id=exc.batch_id,
+                conflicts=[
+                    ConflictDetail(
+                        event_id=c.event_id,
+                        conflict_source=c.conflict_source,
+                        mismatched_fields=c.mismatched_fields,
+                        incoming_fingerprint=c.incoming_fingerprint,
+                        stored_fingerprint=c.stored_fingerprint,
+                    )
+                    for c in exc.conflicts
+                ],
+            ).model_dump(),
+        )
 
 
 @router.get(

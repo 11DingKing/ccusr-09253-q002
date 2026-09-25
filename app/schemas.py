@@ -77,6 +77,24 @@ class ImportResult(BaseModel):
     rejected: list[dict[str, Any]]
 
 
+class ConflictDetail(BaseModel):
+    """单条同号冲突的脱敏详情：只含指纹与字段名，不含学员标识或负载内容。"""
+
+    event_id: str
+    conflict_source: str
+    mismatched_fields: list[str]
+    incoming_fingerprint: str
+    stored_fingerprint: str
+
+
+class BatchConflictOut(BaseModel):
+    """整批原子拒绝的响应体；batch_id 可用于审计系统定位冲突详情。"""
+
+    detail: str
+    batch_id: str
+    conflicts: list[ConflictDetail]
+
+
 class DailyTotal(BaseModel):
     academic_day: str
     seconds: int
