@@ -55,6 +55,19 @@ class EventIn(BaseModel):
     student_id: str = Field(..., min_length=1, max_length=128)
     payload: dict[str, Any]
 
+    @model_validator(mode="after")
+    def _validate_payload_shape(self) -> "EventIn":
+        """按事件类型校验载荷结构，拒绝会在重放阶段崩溃的畸形事件。"""
+        payload_model: type[BaseModel]
+        if self.event_type == "checkin":
+            payload_model = CheckinPayload
+        elif self.event_type == "mentor_confirm":
+            payload_model = MentorConfirmPayload
+        else:
+            payload_model = LeaveCorrectionPayload
+        payload_model.model_validate(self.payload)
+        return self
+
 
 class EventBatchIn(BaseModel):
     events: list[EventIn]

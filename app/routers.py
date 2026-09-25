@@ -57,6 +57,21 @@ def post_events(
         )
     except services.PlanNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except services.EventConflictError as exc:
+        # 整批已原子回滚；响应仅含事件编号与内容指纹，不泄露学员信息，
+        # batch_id 可用于在内部审计表中定位完整冲突细节。
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "event_id_conflict",
+                "message": (
+                    "event id reused with different content; "
+                    "the entire batch was rejected and nothing was persisted"
+                ),
+                "batch_id": exc.batch_id,
+                "conflicts": exc.conflicts,
+            },
+        ) from exc
 
 
 @router.get(

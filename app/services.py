@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +31,19 @@ class FreezeConflictError(Exception):
 
 class FreezeNotFoundError(Exception):
     pass
+
+
+class EventConflictError(Exception):
+    """同号事件内容冲突：整批已被原子拒绝。
+
+    携带的 conflicts 为脱敏后的冲突详情（仅事件编号与内容指纹），
+    不包含任何学员标识，可安全返回给调用方；完整细节已写入审计表。
+    """
+
+    def __init__(self, batch_id: str, conflicts: list[dict[str, Any]]) -> None:
+        super().__init__("event id reused with different content; batch rejected")
+        self.batch_id = batch_id
+        self.conflicts = conflicts
 
 
 def get_plan_plain(db: Session, plan_version: str) -> dict[str, Any] | None:
@@ -74,12 +88,28 @@ def import_events(
     db: Session, *, plan_version: str, events: list[dict[str, Any]]
 ) -> dict[str, Any]:
     _require_plan(db, plan_version)
-    accepted, duplicates = insert_events(
-        db, plan_version=plan_version, events=events
+    # 结束只读事务，避免在持有读快照的情况下进入写批次：并发导入时
+    # 各连接直接在写锁上排队，而不会因读锁升级相互阻塞。
+    db.commit()
+    batch_id = uuid.uuid4().hex
+    outcome = insert_events(
+        db, plan_version=plan_version, events=events, batch_id=batch_id
     )
+    if outcome.conflicts:
+        # 整批已回滚且审计已落库；向调用方只暴露脱敏的冲突详情。
+        sanitized = [
+            {
+                "event_id": c.event_id,
+                "reason": c.reason,
+                "submitted_fingerprint": c.submitted_fingerprint,
+                "stored_fingerprint": c.stored_fingerprint,
+            }
+            for c in outcome.conflicts
+        ]
+        raise EventConflictError(batch_id, sanitized)
     return {
-        "accepted": len(accepted),
-        "duplicates": duplicates,
+        "accepted": len(outcome.accepted),
+        "duplicates": outcome.duplicates,
         "rejected": [],
     }
 
